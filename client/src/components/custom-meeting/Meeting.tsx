@@ -1,16 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Mic,
-  Video,
-  MonitorUp,
-  PhoneOff,
-  MoreVertical,
-  CheckCircle2,
-} from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import RoomChat from "./RoomChat";
 import EngagementScore from "./EngagementScore";
 import Notes from "./Notes";
@@ -26,22 +18,20 @@ import VideoControlls from "./VideoControlls";
 import IncomingUserMedia from "./IncomingUserMedia";
 
 interface ChatMessage {
-  sender: string; // The user sending the message
-  message: string; // The message content
-  timestamp: string; // The timestamp of the message
+  sender: string;
+  message: string;
+  timestamp: string;
 }
 
 export default function Meeting() {
-  const { socket, joinRoom } = useSocket();
+  const { socket, nonHighlightedPlayers } = useSocket();
   const dispatch = useDispatch();
   const router = useRouter();
 
   const { role, roomId } = useSelector((state: RootState) => state.ruthiMain);
 
   useEffect(() => {
-    if (socket && roomId) {
-      joinRoom(roomId);
-    }
+    if (!socket || !roomId) return;
 
     socket?.on("receiveMessage", (data: ChatMessage) => {
       if (role !== data.sender) {
@@ -59,13 +49,24 @@ export default function Meeting() {
       {/* Left Section - Video */}
       <div className="flex-1 relative">
         {/* Header */}
-        <div className="absolute top-0 left-0 right-0 p-4 flex items-center justify-between z-10">
+        <div className="absolute top-0 left-0 right-0 p-4 flex items-center justify-between z-10 bg-gradient-to-b from-black/50 to-transparent">
           <JobDetails />
         </div>
 
         {/* Main Video */}
         <div className="h-full bg-muted">
-          <IncomingUserMedia />
+          {/* <IncomingUserMedia /> */}
+          {Object.keys(nonHighlightedPlayers).map((playerId) => {
+            const { url, muted, playing } = nonHighlightedPlayers[playerId];
+            return (
+              <IncomingUserMedia
+                key={playerId}
+                url={url}
+                muted={muted}
+                playing={playing}
+              />
+            );
+          })}
 
           {/* Video Controls */}
           <VideoControlls />

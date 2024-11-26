@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 
 export default function Home() {
   const router = useRouter();
-
-  const authToken = sessionStorage.getItem("authToken");
-  const meetingLink = sessionStorage.getItem("meetingLink");
+  var authToken;
+  var meetingLink;
 
   useEffect(() => {
+    authToken = sessionStorage.getItem("authToken");
+    meetingLink = sessionStorage.getItem("meetingLink");
+
     if (!authToken && !meetingLink) {
       router.push("/meeting-error");
     }
@@ -18,7 +20,7 @@ export default function Home() {
 
   return (
     <>
-      {!authToken && !meetingLink ? null : (
+      {!authToken && !meetingLink && (
         <div className="flex flex-col h-screen w-screen">
           <Meeting />
         </div>

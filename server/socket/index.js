@@ -13,6 +13,7 @@ const initSocket = (server) => {
     },
   });
 
+  console.log("Socket server is running...");
   // Apply authentication middleware
   io.use(authSocketMiddleware);
 
