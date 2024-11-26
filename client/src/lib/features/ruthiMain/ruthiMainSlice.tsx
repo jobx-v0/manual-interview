@@ -3,11 +3,13 @@ import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 interface ruthiMainState {
   role: string; // Change 'String' to 'string'
   roomId: string; // Change 'String' to 'string'
+  myPeerId: string; // Change 'String' to 'string'
 }
 
 const initialState: ruthiMainState = {
   role: "",
   roomId: "",
+  myPeerId: "",
 };
 
 export const ruthiMainSlice = createSlice({
@@ -26,6 +28,9 @@ export const ruthiMainSlice = createSlice({
     deleteRoomId: (state) => {
       state.roomId = "";
     },
+    setMyPeerId: (state, action: PayloadAction<string>) => {
+      state.myPeerId = action.payload; // No changes needed here
+    },
     ruthiMainSliceReset: () => initialState,
   },
 });
@@ -35,6 +40,7 @@ export const {
   deleteRole,
   setRoomId,
   deleteRoomId,
+  setMyPeerId,
   ruthiMainSliceReset,
 } = ruthiMainSlice.actions;
 

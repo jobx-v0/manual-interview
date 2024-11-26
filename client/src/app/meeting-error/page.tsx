@@ -1,7 +1,14 @@
-import React from "react";
+"use client";
+
+import React, { useEffect } from "react";
 import Link from "next/link";
 
 const MeetingError: React.FC = () => {
+  useEffect(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+  }, []);
+
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100 px-4 sm:px-6 lg:px-8">
       <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">

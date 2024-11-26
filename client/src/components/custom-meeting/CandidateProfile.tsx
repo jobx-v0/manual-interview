@@ -151,7 +151,7 @@ const CandidateProfile = () => {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-4 cursor-pointer">
             <Avatar className="w-16 h-16">
               <AvatarImage
                 src="/placeholder.svg"

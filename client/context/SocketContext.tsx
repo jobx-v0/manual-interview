@@ -1,22 +1,50 @@
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
 import React, {
   createContext,
-  useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { jwtDecode } from "jwt-decode";
-import { useDispatch } from "react-redux";
+import Peer, { MediaConnection } from "peerjs";
+import { cloneDeep } from "lodash";
+import { useDispatch, useSelector } from "react-redux";
 import { setRole, setRoomId } from "@/lib/features/ruthiMain/ruthiMainSlice";
-import peerService from "@/services/Peer";
+import { RootState } from "@/lib/store";
+import { useRouter } from "next/navigation";
+import usePeer from "../hooks/usePeer";
+import useSocketManager from "../hooks/useSocketManager";
+
+interface Player {
+  muted: boolean;
+  playing: boolean;
+  [key: string]: any;
+}
+
+interface Players {
+  [id: string]: Player;
+}
 
 interface iSocketContext {
   socket: Socket | null;
-  isSocketConnected: boolean;
+  peer: Peer | null;
+  myPeerId: string;
   localStream: MediaStream | null;
-  remoteStream: MediaStream | null;
-  joinRoom: (roomId: string) => void;
+  setPlayers: React.Dispatch<React.SetStateAction<Players>>;
+  playerHighlighted: Player | undefined;
+  nonHighlightedPlayers: Players;
+  toggleAudio: () => void;
+  toggleVideo: () => void;
+  leaveRoom: () => void;
+  availableDevices: MediaDeviceInfo[];
+  selectedAudioDevice: string | null;
+  selectedOutputDevice: string | null;
+  selectedVideoDevice: string | null;
+  setAvailableDevices: React.Dispatch<React.SetStateAction<MediaDeviceInfo[]>>;
+  setSelectedAudioDevice: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedOutputDevice: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedVideoDevice: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
 interface CustomTokenJwtPayload {
@@ -31,6 +59,10 @@ interface CustomMeetingLinkJwtPayload {
   roomId: string;
 }
 
+interface UsersState {
+  [userId: string]: MediaConnection;
+}
+
 export const SocketContext = createContext<iSocketContext | null>(null);
 
 export const SocketContextProvider = ({
@@ -38,29 +70,58 @@ export const SocketContextProvider = ({
 }: {
   children: React.ReactNode;
 }) => {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [isSocketConnected, setIsSocketConnected] = useState(false);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [remoteSocketId, setRemoteSocketId] = useState<string | null>(null);
-  const dispatch = useDispatch();
-
   const authToken = sessionStorage.getItem("authToken") || "";
   const meetingLink = sessionStorage.getItem("meetingLink") || "";
 
+  const authTokenRef = useRef<string>(
+    sessionStorage.getItem("authToken") || ""
+  );
+  const meetingLinkRef = useRef<string>(
+    sessionStorage.getItem("meetingLink") || ""
+  );
+
+  const socket = useSocketManager(authToken, meetingLink);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const isLocalStreamSet = useRef(false);
+
+  const dispatch = useDispatch();
+  const { roomId } = useSelector((state: RootState) => state.ruthiMain);
+  const { myPeerId, peer } = usePeer(roomId, socket);
+
+  const [players, setPlayers] = useState<Players>({});
+  const playersCopy = cloneDeep(players);
+
+  const playerHighlighted = playersCopy[myPeerId];
+  delete playersCopy[myPeerId];
+
+  const nonHighlightedPlayers = playersCopy;
+
+  const [users, setUsers] = useState<UsersState>({});
+
+  const myPeerIdRef = useRef(myPeerId);
+
+  const router = useRouter();
+
+  const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>(
+    []
+  );
+  const [selectedAudioDevice, setSelectedAudioDevice] = useState<string | null>(
+    null
+  );
+  const [selectedOutputDevice, setSelectedOutputDevice] = useState<
+    string | null
+  >(null);
+  const [selectedVideoDevice, setSelectedVideoDevice] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    myPeerIdRef.current = myPeerId;
+  }, [myPeerId]);
+
   const handleJWTData = async () => {
+    if (!authToken || !meetingLink) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: true,
-      });
-
-      if (!stream) {
-        console.log("Please allow audio and video access!");
-        alert("Please allow audio and video access!");
-        return;
-      }
-
       const tokenDecoded = jwtDecode<CustomTokenJwtPayload>(authToken);
       const meetingLinkDecoded =
         jwtDecode<CustomMeetingLinkJwtPayload>(meetingLink);
@@ -69,11 +130,6 @@ export const SocketContextProvider = ({
         dispatch(setRole(tokenDecoded.role));
         dispatch(setRoomId(meetingLinkDecoded.roomId));
       }
-
-      setLocalStream(stream);
-      stream.getTracks().forEach((track) => {
-        peerService.peer.addTrack(track, stream);
-      });
     } catch (error) {
       console.error("JWT decode error:", error);
       alert("Invalid session. Please join meeting again.");
@@ -81,144 +137,413 @@ export const SocketContextProvider = ({
   };
 
   useEffect(() => {
-    const backendUrl = "http://localhost:8080/";
-    const newSocket = io(backendUrl, {
-      auth: {
-        token: `Bearer ${authToken}`,
-        meetingLink: `${meetingLink}`,
-      },
-    });
-
-    setSocket(newSocket);
-
-    newSocket.on("connect_error", (error) => {
-      console.error("Socket connection error:", error.message);
-
-      if (error.message.includes("Unauthorized")) {
-        sessionStorage.clear();
-      } else {
-        alert("Unable to connect to the server. Please try again later.");
-      }
-    });
-
-    if (authToken) {
-      handleJWTData();
-    }
-
-    return () => {
-      newSocket.disconnect();
-    };
-  }, [authToken, meetingLink]);
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleConnect = () => setIsSocketConnected(true);
-    const handleDisconnect = () => setIsSocketConnected(false);
-
-    socket.on("connect", handleConnect);
-    socket.on("disconnect", handleDisconnect);
-
-    return () => {
-      socket.off("connect", handleConnect);
-      socket.off("disconnect", handleDisconnect);
-    };
-  }, [socket]);
-
-  const joinRoom = useCallback(
-    (roomId: string) => {
-      socket?.emit("room:join", { roomId });
-      socket?.on("error", (error) => alert(error.message));
-    },
-    [socket]
-  );
-
-  const handleUserJoined = useCallback(
-    async ({ id }: { id: string }) => {
-      if (socket && socket.id !== id) {
-        console.log(`SocketId ${id} joined room`);
-        setRemoteSocketId(id);
-        const offer = await peerService.getOffer();
-        console.log(`socketId: ${id} offer: ${offer}`);
-        socket.emit("user:call", { to: id, offer });
-      }
-    },
-    [socket]
-  );
-
-  const handleIncommingCall = useCallback(
-    async (data: { from: string; offer: RTCSessionDescriptionInit }) => {
-      const { from, offer } = data;
-      if (socket && socket.id !== from) {
-        setRemoteSocketId(from);
-        console.log(`Incoming Call`, from, offer);
-        const answer = await peerService.getAnswer(offer);
-        socket.emit("call:accepted", { to: from, ans: answer });
-      }
-    },
-    [socket]
-  );
-
-  const sendStreams = useCallback(() => {
-    if (!localStream) {
-      console.error("Local stream is not available.");
+    if (!authTokenRef || !meetingLinkRef) {
+      router.push("/meeting-error");
       return;
     }
-
-    const existingSenders = peerService.peer.getSenders();
-
-    for (const track of localStream.getTracks()) {
-      const isTrackAlreadyAdded = existingSenders.some(
-        (sender) => sender.track === track
-      );
-
-      if (!isTrackAlreadyAdded) {
-        peerService.peer.addTrack(track, localStream);
-      }
-    }
-  }, [localStream]);
-
-  const handleCallAccepted = useCallback(
-    ({ from, ans }: { from: string; ans: RTCSessionDescriptionInit }) => {
-      if (socket && socket.id !== from) {
-        peerService.setLocalDescription(ans);
-        console.log("Call Accepted!");
-        sendStreams();
-      }
-    },
-    [socket, sendStreams]
-  );
+    handleJWTData();
+  }, [authTokenRef, meetingLinkRef]);
 
   useEffect(() => {
-    peerService.peer.addEventListener("track", (event) => {
-      const remoteStreams = event.streams;
-      console.log("Received remote tracks:", remoteStreams);
-      if (remoteStreams[0]) {
-        setRemoteStream(remoteStreams[0]);
+    const fetchDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setAvailableDevices(devices);
+
+        const defaultAudioDevice = devices.find(
+          (device) => device.kind === "audioinput"
+        );
+        const defaultVideoDevice = devices.find(
+          (device) => device.kind === "videoinput"
+        );
+        const defaultOutputDevice = devices.find(
+          (device) => device.kind === "audiooutput"
+        );
+
+        if (defaultAudioDevice)
+          setSelectedAudioDevice(defaultAudioDevice.deviceId);
+        if (defaultVideoDevice)
+          setSelectedVideoDevice(defaultVideoDevice.deviceId);
+        if (defaultOutputDevice)
+          setSelectedOutputDevice(defaultOutputDevice.deviceId);
+
+        console.log("Available devices:", devices);
+      } catch (err) {
+        console.error("Error fetching devices:", err);
       }
-    });
+    };
+
+    fetchDevices();
   }, []);
 
   useEffect(() => {
-    socket?.on("user:joined", handleUserJoined);
-    socket?.on("incomming:call", handleIncommingCall);
-    socket?.on("call:accepted", handleCallAccepted);
+    if (!selectedOutputDevice) return;
+
+    const audioElements = document.querySelectorAll("audio");
+    audioElements.forEach((audio) => {
+      if ("setSinkId" in audio) {
+        (audio as HTMLMediaElement)
+          .setSinkId(selectedOutputDevice)
+          .then(() => {
+            console.log(
+              `Audio output routed to device: ${selectedOutputDevice}`
+            );
+          })
+          .catch((err) => {
+            console.error("Error setting sink ID:", err);
+          });
+      } else {
+        console.warn("setSinkId is not supported in this browser.");
+      }
+    });
+  }, [selectedOutputDevice]);
+
+  const updateStream = async () => {
+    try {
+      // Stop existing tracks
+      localStream?.getTracks().forEach((track) => track.stop());
+
+      // Define new constraints based on selected devices
+      const constraints: MediaStreamConstraints = {
+        audio: selectedAudioDevice
+          ? { deviceId: { exact: selectedAudioDevice } }
+          : true,
+        video: selectedVideoDevice
+          ? { deviceId: { exact: selectedVideoDevice } }
+          : true,
+      };
+
+      // Get new media stream
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Update localStream
+      setLocalStream(newStream);
+
+      console.log("Updated local stream with selected devices.");
+
+      // Replace tracks in PeerJS connections
+      Object.values(users).forEach((connection) => {
+        connection.peerConnection.getSenders().forEach((sender) => {
+          if (sender.track?.kind === "audio") {
+            const newAudioTrack = newStream.getAudioTracks()[0];
+            if (newAudioTrack) sender.replaceTrack(newAudioTrack);
+          }
+          if (sender.track?.kind === "video") {
+            const newVideoTrack = newStream.getVideoTracks()[0];
+            if (newVideoTrack) sender.replaceTrack(newVideoTrack);
+          }
+        });
+      });
+
+      // Notify connected peers about the updated stream
+      Object.keys(players).forEach((peerId) => {
+        if (peerId !== myPeerId) {
+          const call = peer?.call(peerId, newStream);
+          call?.on("stream", (remoteStream) => {
+            setPlayers((prev) => ({
+              ...prev,
+              [peerId]: { url: remoteStream, muted: true, playing: true },
+            }));
+          });
+        }
+      });
+    } catch (err) {
+      console.error("Error updating stream:", err);
+    }
+  };
+
+  useEffect(() => {
+    // Update stream whenever a device is selected or changed
+    if (selectedAudioDevice || selectedVideoDevice) {
+      updateStream();
+    }
+  }, [selectedAudioDevice, selectedVideoDevice]);
+
+  // useEffect(() => {
+  //   if (isLocalStreamSet.current) return;
+  //   isLocalStreamSet.current = true;
+
+  //   (async function initStream() {
+  //     try {
+  //       const stream = await navigator.mediaDevices.getUserMedia({
+  //         audio: true,
+  //         video: true,
+  //       });
+  //       console.log("Setting your stream");
+  //       setLocalStream(stream);
+  //     } catch (e) {
+  //       console.error("Error in media navigator", e);
+  //     }
+  //   })();
+  // }, []);
+
+  useEffect(() => {
+    const handleUserConnected = (newUser: string) => {
+      if (!socket || !peer || !localStream) return;
+
+      // Check if the user is already in the meeting
+      if (users[newUser]) {
+        console.log(
+          `User ${newUser} is already connected. Ignoring duplicate connection.`
+        );
+        return;
+      }
+
+      console.log(`User connected in room with userId ${newUser}`);
+      const call = peer.call(newUser, localStream);
+
+      call.on("stream", (incomingStream) => {
+        console.log(`Incoming stream from ${newUser}`);
+
+        // Check again before saving the stream
+        setPlayers((prev) => {
+          if (prev[newUser]) {
+            console.log(
+              `Duplicate stream detected for ${newUser}. Skipping update.`
+            );
+            return prev;
+          }
+          return {
+            ...prev,
+            [newUser]: {
+              url: incomingStream,
+              muted: true,
+              playing: true,
+            },
+          };
+        });
+
+        setUsers((prev) => {
+          if (prev[newUser]) {
+            console.log(
+              `Duplicate user detected for ${newUser}. Skipping update.`
+            );
+            return prev;
+          }
+          return {
+            ...prev,
+            [newUser]: call,
+          };
+        });
+      });
+    };
+
+    socket?.on("user-connected", handleUserConnected);
 
     return () => {
-      socket?.off("user:joined", handleUserJoined);
-      socket?.off("incomming:call", handleIncommingCall);
-      socket?.off("call:accepted", handleCallAccepted);
+      socket?.off("user-connected", handleUserConnected);
     };
-  }, [socket, handleUserJoined, handleIncommingCall, handleCallAccepted]);
+  }, [peer, socket, localStream]);
+
+  useEffect(() => {
+    if (!peer || !localStream) return;
+
+    peer.on("call", (call) => {
+      const { peer: callerId } = call;
+
+      // Check if the callerId already exists in the users state
+      if (users[callerId]) {
+        console.log(`Duplicate call detected from ${callerId}. Ignoring.`);
+        return;
+      }
+
+      call.answer(localStream);
+
+      call.on("stream", (incomingStream) => {
+        console.log(`Incoming stream from ${callerId}`);
+
+        // Check again in the players state before updating
+        setPlayers((prev) => {
+          if (prev[callerId]) {
+            console.log(
+              `Duplicate stream detected for ${callerId}. Skipping update.`
+            );
+            return prev;
+          }
+          return {
+            ...prev,
+            [callerId]: {
+              url: incomingStream,
+              muted: true,
+              playing: true,
+            },
+          };
+        });
+
+        setUsers((prev) => {
+          if (prev[callerId]) {
+            console.log(
+              `Duplicate user detected for ${callerId}. Skipping update.`
+            );
+            return prev;
+          }
+          return {
+            ...prev,
+            [callerId]: call,
+          };
+        });
+      });
+    });
+
+    return () => {
+      peer.off("call");
+    };
+  }, [peer, localStream, users]);
+
+  useEffect(() => {
+    if (!localStream || !myPeerId) return;
+
+    console.log(
+      `Setting my stream for peer ID and appending to players: ${myPeerId}`
+    );
+
+    setPlayers((prev) => {
+      // Check if the myPeerId is already in the players state
+      if (prev[myPeerId]) {
+        console.log(
+          `Stream for peer ID ${myPeerId} is already set. Skipping update.`
+        );
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [myPeerId]: {
+          url: localStream,
+          muted: true,
+          playing: true,
+        },
+      };
+    });
+  }, [myPeerId, setPlayers, localStream]);
+
+  const leaveRoom = () => {
+    socket?.emit("user-leave", myPeerId, roomId);
+    console.log("leaving room", roomId);
+    peer?.disconnect();
+    router?.push("/thank-you");
+  };
+
+  const toggleAudio = () => {
+    const currentPeerId = myPeerIdRef.current;
+    if (!currentPeerId) {
+      console.error("Peer ID not available");
+      return;
+    }
+
+    console.log(`I toggled my audio id ${currentPeerId}`);
+    console.log(`Players are: `);
+    Object.keys(players).map((playerId) => {
+      console.log("playerId: ", playerId, "Details: ", players[playerId]);
+    });
+
+    if (currentPeerId) {
+      setPlayers((prev) => {
+        const copy = cloneDeep(prev);
+        if (!copy[currentPeerId]) {
+          console.error(`Player with id ${currentPeerId} does not exist.`);
+          return prev;
+        }
+        copy[currentPeerId].muted = !copy[currentPeerId].muted;
+        return { ...copy };
+      });
+      socket?.emit("user-toggle-audio", currentPeerId, roomId);
+    }
+  };
+
+  const toggleVideo = () => {
+    const currentPeerId = myPeerIdRef.current;
+    if (!currentPeerId) {
+      console.error("Peer ID not available");
+      return;
+    }
+
+    console.log(`I toggled my video id ${currentPeerId}`);
+    console.log(`Players are: `);
+    Object.keys(players).map((playerId) => {
+      console.log("playerId: ", playerId, "Details: ", players[playerId]);
+    });
+
+    if (currentPeerId) {
+      setPlayers((prev) => {
+        const copy = cloneDeep(prev);
+        if (!copy[currentPeerId]) {
+          console.error(`Player with id ${currentPeerId} does not exist.`);
+          return prev;
+        }
+        copy[currentPeerId].playing = !copy[currentPeerId].playing;
+
+        if (copy[currentPeerId].playing) {
+          updateStream();
+        }
+
+        return { ...copy };
+      });
+      socket?.emit("user-toggle-video", currentPeerId, roomId);
+    }
+  };
+
+  useEffect(() => {
+    if (!socket) return;
+    const handleToggleAudio = (userId: string) => {
+      console.log(`user with id ${userId} toggled audio`);
+      setPlayers((prev) => {
+        const copy = cloneDeep(prev);
+        console.log(prev);
+        copy[userId].muted = !copy[userId].muted;
+        return { ...copy };
+      });
+    };
+
+    const handleToggleVideo = (userId: string) => {
+      console.log(`user with id ${userId} toggled video`);
+      setPlayers((prev) => {
+        const copy = cloneDeep(prev);
+        console.log(copy[userId]);
+        copy[userId].playing = !copy[userId].playing;
+        return { ...copy };
+      });
+    };
+
+    const handleUserLeave = (userId: string) => {
+      console.log(`user ${userId} is leaving the room`);
+      users[userId]?.close();
+      const playersCopy = cloneDeep(players);
+      delete playersCopy[userId];
+      setPlayers(playersCopy);
+    };
+
+    socket.on("user-toggle-audio", handleToggleAudio);
+    socket.on("user-toggle-video", handleToggleVideo);
+    socket.on("user-leave", handleUserLeave);
+    return () => {
+      socket.off("user-toggle-audio", handleToggleAudio);
+      socket.off("user-toggle-video", handleToggleVideo);
+      socket.off("user-leave", handleUserLeave);
+    };
+  }, [players, setPlayers, socket, users]);
 
   return (
     <SocketContext.Provider
       value={{
         socket,
-        isSocketConnected,
+        peer,
+        myPeerId,
         localStream,
-        remoteStream,
-        joinRoom,
+        setPlayers,
+        nonHighlightedPlayers,
+        playerHighlighted,
+        toggleAudio,
+        toggleVideo,
+        leaveRoom,
+        availableDevices,
+        selectedAudioDevice,
+        selectedOutputDevice,
+        selectedVideoDevice,
+        setAvailableDevices,
+        setSelectedAudioDevice,
+        setSelectedOutputDevice,
+        setSelectedVideoDevice,
       }}
     >
       {children}
